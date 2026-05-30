@@ -1,0 +1,27 @@
+# Secrets — never commit (belt and suspenders)
+.env
+**/.env
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.db
+*.db-wal
+*.db-shm
+
+# Logs
+*.log
+
+# Node / frontend
+node_modules/
+frontend/dist/
+
+# Smoke-test artifacts
+frontend/smoke-screenshot.png
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
