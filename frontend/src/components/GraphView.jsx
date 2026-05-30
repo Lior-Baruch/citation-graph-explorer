@@ -34,13 +34,24 @@ export default function GraphView({
     return () => ro.disconnect();
   }, []);
 
-  // Spread nodes apart so dense neighborhoods stay legible.
+  // Spread nodes apart so dense neighborhoods stay legible, and re-fit the view
+  // whenever the data changes (seed load / expand / filter) — but NOT after a
+  // plain node drag, so manual positioning isn't fought by the camera.
+  const dataChanged = useRef(false);
   useEffect(() => {
     const fg = fgRef.current;
     if (!fg) return;
     fg.d3Force("charge")?.strength(-160);
     fg.d3Force("link")?.distance(55);
     fg.d3ReheatSimulation?.();
+    dataChanged.current = true;
+  }, [graphData]);
+
+  const handleEngineStop = useCallback(() => {
+    if (dataChanged.current && graphData.nodes.length > 0) {
+      fgRef.current?.zoomToFit(400, 60);
+      dataChanged.current = false;
+    }
   }, [graphData]);
 
   const pathSet = useMemo(() => new Set(lineagePath || []), [lineagePath]);
@@ -123,6 +134,7 @@ export default function GraphView({
         linkDirectionalArrowLength={3.5}
         linkDirectionalArrowRelPos={1}
         onNodeClick={onNodeClick}
+        onEngineStop={handleEngineStop}
         cooldownTicks={120}
       />
     </div>
