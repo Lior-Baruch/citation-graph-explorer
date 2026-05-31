@@ -114,3 +114,142 @@ def narrate_lineage(ordered_papers: list[dict]) -> Optional[str]:
 
     db.llm_set(cache_key, text)
     return text
+
+
+_EXPLAIN_SYSTEM = (
+    "You explain research papers to a curious non-specialist. Given a paper's "
+    "title and abstract, write 2-3 short paragraphs: (1) the problem it tackles "
+    "and why it matters, (2) the key idea or contribution in plain language, and "
+    "(3) why it was influential or what it enabled. Be concrete and accessible; "
+    "avoid jargon and do not use bullet points or headings."
+)
+
+
+def explain_paper(paper: dict) -> Optional[str]:
+    """Plain-language explanation of one paper. Cached by paper id + content."""
+    if not config.LLM_ENABLED or not paper:
+        return None
+
+    title = (paper.get("title") or "Untitled").strip()
+    abstract = (paper.get("abstract") or "").strip()
+    tldr = ""
+    if isinstance(paper.get("tldr"), dict):
+        tldr = (paper["tldr"].get("text") or "").strip()
+    body = abstract or tldr
+    if not body:
+        return None
+
+    cache_key = f"explain:{_sig(paper.get('paperId', ''), title, body)}"
+    cached = db.llm_get(cache_key)
+    if cached is not None:
+        return cached
+
+    year = paper.get("year") or "n.d."
+    user_text = f"Title: {title}\nYear: {year}\nAbstract: {body}"
+
+    try:
+        msg = _get_client().messages.create(
+            model=config.ANTHROPIC_MODEL,
+            max_tokens=500,
+            system=[{"type": "text", "text": _EXPLAIN_SYSTEM,
+                     "cache_control": {"type": "ephemeral"}}],
+            messages=[{"role": "user", "content": user_text}],
+        )
+        text = msg.content[0].text.strip()
+    except Exception:
+        return None
+
+    db.llm_set(cache_key, text)
+    return text
+
+
+_CLUSTER_SUMMARY_SYSTEM = (
+    "You summarize themes in a research-paper cluster. Given a list of paper titles "
+    "and one-line summaries from one cluster, write ONE or TWO sentences describing "
+    "what unifies this group and the sub-topics it spans. No preamble, no bullet points."
+)
+
+
+def summarize_cluster(signature: str, papers: list[dict]) -> Optional[str]:
+    """1-2 sentence theme summary for a cluster, cached by its signature."""
+    if not config.LLM_ENABLED:
+        return None
+
+    cache_key = f"summary:{signature}"
+    cached = db.llm_get(cache_key)
+    if cached is not None:
+        return cached
+
+    lines = []
+    for p in papers[:25]:
+        title = (p.get("title") or "").strip()
+        tldr = ""
+        if isinstance(p.get("tldr"), dict):
+            tldr = (p["tldr"].get("text") or "").strip()
+        lines.append(f"- {title}" + (f" — {tldr}" if tldr else ""))
+    user_text = "Papers in this cluster:\n" + "\n".join(lines)
+
+    try:
+        msg = _get_client().messages.create(
+            model=config.ANTHROPIC_MODEL,
+            max_tokens=120,
+            system=[{"type": "text", "text": _CLUSTER_SUMMARY_SYSTEM,
+                     "cache_control": {"type": "ephemeral"}}],
+            messages=[{"role": "user", "content": user_text}],
+        )
+        text = msg.content[0].text.strip()
+    except Exception:
+        return None
+
+    db.llm_set(cache_key, text)
+    return text
+
+
+_LANDSCAPE_SYSTEM = (
+    "You are a research strategist. Given the themed clusters of a citation graph "
+    "(each with a label and representative papers), write a short briefing (3-4 "
+    "short paragraphs): what research areas this body of work covers, how the "
+    "themes relate, and 2-3 concrete gaps or under-explored directions a researcher "
+    "might pursue next. Be specific and grounded in the clusters shown; no bullet lists."
+)
+
+
+def analyze_landscape(clusters_payload: list[dict]) -> Optional[str]:
+    """Narrate the research landscape + gaps across clusters. Cached by signatures.
+
+    `clusters_payload` is a list of {signature, label, papers:[{title,tldr}]}.
+    """
+    if not config.LLM_ENABLED or not clusters_payload:
+        return None
+
+    sig = _sig(*sorted(c.get("signature", "") for c in clusters_payload))
+    cache_key = f"landscape:{sig}"
+    cached = db.llm_get(cache_key)
+    if cached is not None:
+        return cached
+
+    blocks = []
+    for c in clusters_payload:
+        label = c.get("label") or "Unlabeled cluster"
+        titles = []
+        for p in (c.get("papers") or [])[:6]:
+            t = (p.get("title") or "").strip()
+            if t:
+                titles.append(t)
+        blocks.append(f"Theme: {label}\n  " + "\n  ".join(titles))
+    user_text = "Clusters in the current graph:\n\n" + "\n\n".join(blocks)
+
+    try:
+        msg = _get_client().messages.create(
+            model=config.ANTHROPIC_MODEL,
+            max_tokens=600,
+            system=[{"type": "text", "text": _LANDSCAPE_SYSTEM,
+                     "cache_control": {"type": "ephemeral"}}],
+            messages=[{"role": "user", "content": user_text}],
+        )
+        text = msg.content[0].text.strip()
+    except Exception:
+        return None
+
+    db.llm_set(cache_key, text)
+    return text

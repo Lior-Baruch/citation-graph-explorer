@@ -11,11 +11,27 @@ class ResolveRequest(BaseModel):
 class ClusterRequest(BaseModel):
     paperIds: list[str]
     edges: list[dict] = []
+    summarize: bool = False
 
 
 class LineageRequest(BaseModel):
     sourceId: str
     targetId: str
+    edges: list[dict] = []
+
+
+class SimilarRequest(BaseModel):
+    paperId: str
+    paperIds: list[str]
+    topK: Optional[int] = None
+
+
+class ExplainRequest(BaseModel):
+    paperId: str
+
+
+class LandscapeRequest(BaseModel):
+    paperIds: list[str]
     edges: list[dict] = []
 
 

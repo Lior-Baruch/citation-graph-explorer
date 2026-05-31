@@ -1,27 +1,59 @@
-import React, { useCallback, useMemo, useRef, useEffect, useState } from "react";
+import React, {
+  forwardRef,
+  useCallback,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useEffect,
+  useState,
+} from "react";
 import ForceGraph2D from "react-force-graph-2d";
 import { clusterColor } from "../colors";
+import { downloadDataUrl } from "../utils/export";
 
 // Edge colors: subtle distinction between "this paper cites ->" (reference)
 // and "<- cited by this paper" (citation). Both arrows point citing -> cited.
 const REFERENCE_COLOR = "rgba(96,165,250,0.35)"; // outgoing (seed cites)
 const CITATION_COLOR = "rgba(244,114,182,0.30)"; // incoming (cites seed)
+const SUGGESTED_COLOR = "rgba(52,211,153,0.40)"; // recommended (not a real citation)
 
 function nodeRadius(node) {
   // Log-scaled by citation count.
   return 3 + Math.log10((node.citationCount || 0) + 1) * 2.2;
 }
 
-export default function GraphView({
-  graphData,
-  clusters,
-  selectedId,
-  lineagePath,
-  onNodeClick,
-}) {
+const GraphView = forwardRef(function GraphView(
+  {
+    graphData,
+    clusters,
+    selectedId,
+    lineagePath,
+    similarScores,
+    similarQueryId,
+    onNodeClick,
+  },
+  ref
+) {
   const fgRef = useRef();
   const containerRef = useRef();
   const [dims, setDims] = useState({ width: 800, height: 600 });
+
+  // Expose a PNG snapshot to the parent: fit the whole graph, let it repaint,
+  // then read pixels off the underlying canvas.
+  useImperativeHandle(ref, () => ({
+    exportPng: () => {
+      fgRef.current?.zoomToFit(0, 40);
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => {
+          const canvas = containerRef.current?.querySelector("canvas");
+          if (canvas) {
+            downloadDataUrl("citation-graph.png", canvas.toDataURL("image/png"));
+          }
+        })
+      );
+    },
+    fit: () => fgRef.current?.zoomToFit(400, 60),
+  }));
 
   useEffect(() => {
     const el = containerRef.current;
@@ -72,15 +104,27 @@ export default function GraphView({
       const color = clusterColor(cid);
       const isSelected = node.id === selectedId;
       const inPath = pathSet.has(node.id);
+      const isSimilarQuery = node.id === similarQueryId;
+
+      // Similarity highlight: dim everything but the query and its matches, with
+      // matched-node opacity scaled by cosine score.
+      let alpha = 1;
+      if (similarScores) {
+        if (isSimilarQuery) alpha = 1;
+        else if (similarScores.has(node.id))
+          alpha = Math.max(0.25, Math.min(1, similarScores.get(node.id)));
+        else alpha = 0.1;
+      }
+      ctx.globalAlpha = alpha;
 
       ctx.beginPath();
       ctx.arc(node.x, node.y, r, 0, 2 * Math.PI);
       ctx.fillStyle = color;
       ctx.fill();
 
-      if (isSelected || inPath) {
+      if (isSelected || inPath || isSimilarQuery) {
         ctx.lineWidth = 2 / globalScale;
-        ctx.strokeStyle = isSelected ? "#ffffff" : "#fde047";
+        ctx.strokeStyle = isSimilarQuery && !isSelected ? "#34d399" : isSelected ? "#ffffff" : "#fde047";
         ctx.stroke();
       }
 
@@ -93,8 +137,9 @@ export default function GraphView({
         ctx.textAlign = "center";
         ctx.fillText(label, node.x, node.y + r + fontSize + 1);
       }
+      ctx.globalAlpha = 1;
     },
-    [clusters, selectedId, pathSet]
+    [clusters, selectedId, pathSet, similarScores, similarQueryId]
   );
 
   const linkColor = useCallback(
@@ -102,6 +147,7 @@ export default function GraphView({
       const s = typeof link.source === "object" ? link.source.id : link.source;
       const t = typeof link.target === "object" ? link.target.id : link.target;
       if (pathEdgeSet.has(`${s}->${t}`)) return "rgba(253,224,71,0.9)";
+      if (link.relation === "suggested") return SUGGESTED_COLOR;
       return link.relation === "citation" ? CITATION_COLOR : REFERENCE_COLOR;
     },
     [pathEdgeSet]
@@ -131,6 +177,7 @@ export default function GraphView({
           const t = typeof l.target === "object" ? l.target.id : l.target;
           return pathEdgeSet.has(`${s}->${t}`) ? 2.5 : 1;
         }}
+        linkLineDash={(l) => (l.relation === "suggested" ? [4, 3] : null)}
         linkDirectionalArrowLength={3.5}
         linkDirectionalArrowRelPos={1}
         onNodeClick={onNodeClick}
@@ -139,4 +186,6 @@ export default function GraphView({
       />
     </div>
   );
-}
+});
+
+export default GraphView;

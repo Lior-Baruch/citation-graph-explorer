@@ -16,6 +16,8 @@ S2_API_KEY = os.getenv("S2_API_KEY", "").strip()
 
 # --- Semantic Scholar ---
 S2_BASE_URL = "https://api.semanticscholar.org/graph/v1"
+# Recommendations live on a separate host/base path from the graph API.
+RECOMMENDATIONS_BASE_URL = "https://api.semanticscholar.org/recommendations/v1"
 # Throttle: <= 1 req/s without a key. A key raises throughput.
 S2_RATE_LIMIT_PER_SEC = 5.0 if S2_API_KEY else 1.0
 S2_MAX_RETRIES = 5
@@ -25,7 +27,7 @@ S2_TIMEOUT = 30.0
 # Fields requested from the /paper/batch endpoint.
 PAPER_FIELDS = (
     "title,abstract,year,authors,citationCount,influentialCitationCount,"
-    "externalIds,tldr,embedding.specter_v2,url"
+    "externalIds,tldr,embedding.specter_v2,url,venue"
 )
 
 # --- Graph expansion caps ---

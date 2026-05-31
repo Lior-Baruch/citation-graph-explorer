@@ -30,11 +30,11 @@ export const api = {
 
   paper: (paperId) => jsonFetch(`/api/paper/${encodeURIComponent(paperId)}`),
 
-  cluster: (paperIds, edges) =>
+  cluster: (paperIds, edges, summarize = false) =>
     jsonFetch("/api/cluster", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ paperIds, edges }),
+      body: JSON.stringify({ paperIds, edges, summarize }),
     }),
 
   lineage: (sourceId, targetId, edges) =>
@@ -42,5 +42,29 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sourceId, targetId, edges }),
+    }),
+
+  similar: (paperId, paperIds, topK) =>
+    jsonFetch("/api/similar", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paperId, paperIds, topK }),
+    }),
+
+  recommend: (paperId) =>
+    jsonFetch(`/api/recommend/${encodeURIComponent(paperId)}`),
+
+  explain: (paperId) =>
+    jsonFetch("/api/explain", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paperId }),
+    }),
+
+  landscape: (paperIds, edges) =>
+    jsonFetch("/api/landscape", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paperIds, edges }),
     }),
 };

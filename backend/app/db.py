@@ -57,7 +57,10 @@ def init_db() -> None:
 # --- s2_cache ---------------------------------------------------------------
 
 def s2_get(key: str) -> Optional[Any]:
-    row = get_conn().execute("SELECT json FROM s2_cache WHERE key = ?", (key,)).fetchone()
+    with _lock:
+        row = get_conn().execute(
+            "SELECT json FROM s2_cache WHERE key = ?", (key,)
+        ).fetchone()
     return json.loads(row["json"]) if row else None
 
 
@@ -74,9 +77,10 @@ def s2_set(key: str, value: Any) -> None:
 # --- llm_cache --------------------------------------------------------------
 
 def llm_get(signature: str) -> Optional[str]:
-    row = get_conn().execute(
-        "SELECT output FROM llm_cache WHERE signature = ?", (signature,)
-    ).fetchone()
+    with _lock:
+        row = get_conn().execute(
+            "SELECT output FROM llm_cache WHERE signature = ?", (signature,)
+        ).fetchone()
     return row["output"] if row else None
 
 
@@ -107,7 +111,8 @@ def papers_put_many(records: list[dict]) -> None:
 
 
 def paper_get(paper_id: str) -> Optional[dict]:
-    row = get_conn().execute(
-        "SELECT json FROM papers WHERE paper_id = ?", (paper_id,)
-    ).fetchone()
+    with _lock:
+        row = get_conn().execute(
+            "SELECT json FROM papers WHERE paper_id = ?", (paper_id,)
+        ).fetchone()
     return json.loads(row["json"]) if row else None

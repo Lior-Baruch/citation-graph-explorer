@@ -1,11 +1,22 @@
 """API routes. The frontend talks ONLY to these endpoints — never to S2/Claude
 directly — so caching and rate-limiting stay centralized here.
 """
+import asyncio
+
 import networkx as nx
+import numpy as np
 from fastapi import APIRouter, HTTPException
 
 from . import cluster, config, db, llm, s2_client
-from .schemas import ClusterRequest, ConfigResponse, LineageRequest, ResolveRequest
+from .schemas import (
+    ClusterRequest,
+    ConfigResponse,
+    ExplainRequest,
+    LandscapeRequest,
+    LineageRequest,
+    ResolveRequest,
+    SimilarRequest,
+)
 
 router = APIRouter(prefix="/api")
 
@@ -20,6 +31,7 @@ def to_node(rec: dict) -> dict:
         "paperId": rec.get("paperId"),
         "title": rec.get("title"),
         "year": rec.get("year"),
+        "venue": rec.get("venue"),
         "authors": authors,
         "citationCount": rec.get("citationCount") or 0,
         "influentialCitationCount": rec.get("influentialCitationCount") or 0,
@@ -163,6 +175,31 @@ async def neighbors(paper_id: str):
     }
 
 
+@router.get("/recommend/{paper_id}")
+async def recommend(paper_id: str):
+    """Suggested papers to discover (S2 Recommendations API), hydrated to nodes.
+
+    Does NOT add anything to the graph — the UI lets the user choose which to add,
+    preserving the never-auto-expand invariant.
+    """
+    try:
+        res = await s2_client.recommendations(paper_id)
+    except Exception as exc:
+        raise HTTPException(502, f"Semantic Scholar error: {exc}")
+
+    recommended = (res["data"] or {}).get("recommendedPapers") or []
+    rec_ids = [p.get("paperId") for p in recommended if p.get("paperId")]
+    rec_ids = [i for i in rec_ids if i != paper_id]
+    if not rec_ids:
+        return {"nodes": [], "source": res["source"]}
+
+    hydrated = await s2_client.batch(rec_ids)
+    by_id = {r["paperId"]: r for r in hydrated["data"]}
+    nodes = [to_node(by_id[i]) for i in rec_ids if i in by_id]
+    source = "cache" if res["source"] == "cache" and hydrated["source"] == "cache" else "live"
+    return {"nodes": nodes, "source": source}
+
+
 @router.get("/paper/{paper_id}")
 async def get_paper(paper_id: str):
     rec = db.paper_get(paper_id)
@@ -194,18 +231,80 @@ async def cluster_endpoint(req: ClusterRequest):
         if cid is not None:
             members.setdefault(cid, []).append(rec)
 
-    labels = {}
-    for cid, recs in members.items():
+    # Label clusters concurrently; the sync Anthropic SDK runs off the event loop.
+    async def _label(cid, recs):
         sig = signatures.get(cid, str(cid))
-        label = llm.label_cluster(sig, recs)
-        labels[str(cid)] = label  # None if LLM disabled
+        return str(cid), await asyncio.to_thread(llm.label_cluster, sig, recs)
+
+    labels = dict(await asyncio.gather(*[_label(c, r) for c, r in members.items()]))
+
+    # Theme summaries are opt-in (req.summarize) so the recluster-on-every-expand
+    # path doesn't pay for them; cached per signature once computed.
+    summaries = {}
+    if req.summarize:
+        async def _summary(cid, recs):
+            sig = signatures.get(cid, str(cid))
+            return str(cid), await asyncio.to_thread(llm.summarize_cluster, sig, recs)
+
+        summaries = dict(await asyncio.gather(*[_summary(c, r) for c, r in members.items()]))
 
     return {
         "clusters": {pid: int(cid) for pid, cid in assignments.items()},
         "labels": labels,
+        "summaries": summaries,
         "method": result["method"],
         "llm_enabled": config.LLM_ENABLED,
     }
+
+
+@router.post("/explain")
+async def explain(req: ExplainRequest):
+    """Plain-language explanation of one paper (LLM, cached). Loads server-side."""
+    rec = db.paper_get(req.paperId)
+    if rec is None:
+        hydrated = await s2_client.batch([req.paperId])
+        rec = hydrated["data"][0] if hydrated["data"] else None
+    if rec is None:
+        raise HTTPException(404, f"Paper '{req.paperId}' not found")
+    text = await asyncio.to_thread(llm.explain_paper, rec)
+    return {"explanation": text, "llm_enabled": config.LLM_ENABLED}
+
+
+@router.post("/landscape")
+async def landscape(req: LandscapeRequest):
+    """Narrate the research landscape + gaps across the current graph's clusters."""
+    records = [db.paper_get(pid) for pid in req.paperIds]
+    records = [r for r in records if r]
+    if not records:
+        return {"analysis": None, "llm_enabled": config.LLM_ENABLED}
+
+    result = cluster.cluster_papers(records, req.edges)
+    assignments = result["clusters"]
+    signatures = result["signatures"]
+
+    members: dict[int, list[dict]] = {}
+    for rec in records:
+        cid = assignments.get(rec["paperId"])
+        if cid is not None:
+            members.setdefault(cid, []).append(rec)
+
+    # Reuse cached labels per cluster (cheap if already labeled), then narrate.
+    async def _label(cid, recs):
+        sig = signatures.get(cid, str(cid))
+        return cid, await asyncio.to_thread(llm.label_cluster, sig, recs)
+
+    label_by_cid = dict(await asyncio.gather(*[_label(c, r) for c, r in members.items()]))
+
+    payload = []
+    for cid, recs in members.items():
+        payload.append({
+            "signature": signatures.get(cid, str(cid)),
+            "label": label_by_cid.get(cid) or f"Cluster {cid}",
+            "papers": [{"title": r.get("title")} for r in recs[:6]],
+        })
+
+    analysis = await asyncio.to_thread(llm.analyze_landscape, payload)
+    return {"analysis": analysis, "llm_enabled": config.LLM_ENABLED}
 
 
 @router.post("/lineage")
@@ -238,7 +337,7 @@ async def lineage(req: LineageRequest):
     ordered = [db.paper_get(pid) for pid in path]
     ordered = [r for r in ordered if r]
     nodes = [to_node(r) for r in ordered]
-    narration = llm.narrate_lineage(ordered)
+    narration = await asyncio.to_thread(llm.narrate_lineage, ordered)
 
     return {
         "path": [n["id"] for n in nodes],
@@ -246,3 +345,44 @@ async def lineage(req: LineageRequest):
         "narration": narration,
         "llm_enabled": config.LLM_ENABLED,
     }
+
+
+@router.post("/similar")
+async def similar(req: SimilarRequest):
+    """Rank loaded papers by SPECTER2 cosine similarity to one paper.
+
+    Pure local compute over embeddings already in the `papers` cache — no S2
+    call, no LLM. The query paper itself is excluded from the results.
+    """
+    query_rec = db.paper_get(req.paperId)
+    query_vec = cluster._embedding_of(query_rec) if query_rec else None
+    if query_vec is None:
+        raise HTTPException(400, "Selected paper has no embedding to compare against")
+
+    candidates = []  # (id, vector)
+    for pid in req.paperIds:
+        if pid == req.paperId:
+            continue
+        rec = db.paper_get(pid)
+        vec = cluster._embedding_of(rec) if rec else None
+        if vec is not None:
+            candidates.append((pid, vec))
+
+    if not candidates:
+        return {"results": []}
+
+    q = np.asarray(query_vec, dtype=np.float64)
+    q /= np.linalg.norm(q) or 1.0
+    mat = np.asarray([v for _, v in candidates], dtype=np.float64)
+    norms = np.linalg.norm(mat, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    scores = (mat / norms) @ q
+
+    ranked = sorted(
+        ({"id": pid, "score": float(s)} for (pid, _), s in zip(candidates, scores)),
+        key=lambda r: r["score"],
+        reverse=True,
+    )
+    if req.topK:
+        ranked = ranked[: req.topK]
+    return {"results": ranked}

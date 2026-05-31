@@ -91,11 +91,12 @@ async def _request(method: str, url: str, *, params=None, json_body=None) -> Any
     raise RuntimeError(f"S2 request failed after {config.S2_MAX_RETRIES} retries: {url}")
 
 
-async def _cached_get(cache_key: str, path: str, params: dict) -> dict:
+async def _cached_get(cache_key: str, path: str, params: dict, base: str = None) -> dict:
+    base = base or config.S2_BASE_URL
     cached = db.s2_get(cache_key)
     if cached is not None:
         return {"data": cached, "source": "cache"}
-    data = await _request("GET", f"{config.S2_BASE_URL}{path}", params=params)
+    data = await _request("GET", f"{base}{path}", params=params)
     db.s2_set(cache_key, data)
     return {"data": data, "source": "live"}
 
@@ -132,6 +133,24 @@ async def citations(paper_id: str, limit: int = 100) -> dict:
     return await _cached_get(
         key, f"/paper/{paper_id}/citations",
         {"fields": fields, "limit": limit},
+    )
+
+
+async def recommendations(paper_id: str, limit: int = 20, frm: str = "all-cs") -> dict:
+    """Recommended papers for a seed, via the separate recommendations API.
+
+    Returns the raw {"recommendedPapers": [...]} payload wrapped in the standard
+    {"data", "source"} envelope. A light field set keeps the call fast; full
+    fields are hydrated later via batch(). `frm="all-cs"` draws from the whole
+    corpus — the default "recent" pool returns nothing for older seminal papers.
+    """
+    fields = "paperId,title,year,authors,citationCount"
+    key = f"rec:{paper_id}:{limit}:{frm}:{fields}"
+    return await _cached_get(
+        key,
+        f"/papers/forpaper/{paper_id}",
+        {"fields": fields, "limit": limit, "from": frm},
+        base=config.RECOMMENDATIONS_BASE_URL,
     )
 
 
