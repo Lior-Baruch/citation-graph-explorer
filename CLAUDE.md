@@ -1,8 +1,10 @@
 # Citation Graph Explorer — project context for Claude Code
 
 A local web app for literature review: enter a seed paper, explore an interactive
-citation graph from Semantic Scholar, cluster papers into LLM-labeled themes, and
-narrate the lineage between any two papers.
+citation graph from Semantic Scholar, cluster papers into LLM-labeled themes, narrate
+the lineage between any two papers, find semantically similar papers, discover related
+work via S2 recommendations, explain papers / analyze the landscape with Claude, and
+build a reading list you can export (BibTeX/RIS/JSON/PNG) with auto-saved sessions.
 
 > Setup, install, running, env vars, and tech stack live in **[README.md](README.md)** —
 > not duplicated here. This file is the AI/dev reference for the rules and constraints
@@ -25,7 +27,13 @@ Never commit `.env`; if a key is shared, rotate it.
 - **Every S2 response is cached in SQLite** (`backend/cache.db`) keyed by endpoint + id +
   fields. The UI shows a **● cached / ● live** indicator per fetch.
 - `/paper/batch` hydrates many papers at once. We deliberately use the **free** `tldr`
-  and `embedding` (SPECTER2) fields instead of calling an LLM for them.
+  and `embedding` (SPECTER2) fields instead of calling an LLM for them. `PAPER_FIELDS` also
+  includes `venue` (for citation export). **Caveat:** the `papers` table caches whole
+  records by id, so papers cached before a field was added won't have it until re-fetched.
+- **Recommendations** live on a *separate* host/base (`RECOMMENDATIONS_BASE_URL`,
+  `/recommendations/v1`), reached through the same throttled/cached `_request` path via
+  `_cached_get(..., base=...)`. We default to **`from=all-cs`** — the default `recent` pool
+  returns nothing for older seminal papers.
 - **Title search caveat:** S2 throttles its keyless `/paper/search` endpoint very
   aggressively (frequent 429s even at 1 req/s). ID-style lookups (`arXiv:…`, `DOI:…`, S2
   ids, URLs) use the reliable `/paper/{id}` endpoint and work keyless. `resolve` detects
@@ -48,10 +56,41 @@ Never commit `.env`; if a key is shared, rotate it.
   See `backend/app/cluster.py`.
 - **Cluster labels:** each cluster's titles + tldrs → Claude → a 2–4 word theme label,
   cached per cluster signature.
+- **Cluster summaries:** opt-in via the `summarize` flag on `POST /api/cluster` (so the
+  recluster-on-every-expand path doesn't pay for them); a 1–2 sentence theme summary cached
+  per signature, surfaced lazily from the Legend.
 - **Lineage narration:** pick two nodes → shortest path over citation edges → Claude
   narrates how the ideas progressed. Cached per path.
-- Model: `claude-sonnet-4-6` via the Anthropic Messages API (prompt caching on the system
-  prompt). All LLM outputs cached in SQLite (`llm_cache`).
+- **Explain a paper:** `POST /api/explain` loads the record server-side (by id) → Claude
+  gives a plain-language explanation, cached per paper id + content.
+- **Landscape analysis:** `POST /api/landscape` re-clusters, labels, and asks Claude for a
+  themes-and-gaps briefing, cached by the combined cluster signatures (so it invalidates
+  whenever the graph changes).
+- Model: `claude-sonnet-4-6` via the Anthropic Messages API (prompt caching on each system
+  prompt). All LLM outputs cached in SQLite (`llm_cache`). **The sync Anthropic SDK is
+  always called via `asyncio.to_thread`** from the async routes so it never blocks the event
+  loop; per-cluster label/summary calls are fanned out with `asyncio.gather`.
+
+## Semantic similarity, discovery, export, sessions
+- **Find similar (`POST /api/similar`):** paper-to-paper cosine over SPECTER2 vectors read
+  from the `papers` cache (via `cluster._embedding_of`); **no S2/LLM call**, the query id is
+  excluded, papers without embeddings are skipped. This is a *local highlight over loaded
+  papers*, not discovery. Text/concept search is intentionally NOT supported (would need a
+  heavy local SPECTER2 model; cross-embedding-space cosine is meaningless).
+- **Discovery (`GET /api/recommend/{id}`):** S2 recommendations hydrated via `batch`; the UI
+  shows them as "suggested" and the user chooses what to add (dashed `relation:"suggested"`
+  edge) — **never auto-added**, preserving the no-runaway-graph invariant.
+- **Export & sessions are client-side** (all paper metadata already lives in node objects):
+  `frontend/src/utils/export.js` builds BibTeX/RIS/JSON; PNG comes from the force-graph
+  canvas (`GraphView` exposes `exportPng` via `forwardRef`). Sessions auto-save to
+  `localStorage` (key `cge.session.v1`, abstracts stripped to fit quota) and the bootstrap
+  effect offers to restore **before** auto-loading the demo seed.
+
+## Concurrency note (`backend/app/db.py`)
+A single module-level SQLite connection is shared across threads (`check_same_thread=False`).
+Because LLM calls now run concurrently under `asyncio.to_thread`, **all** connection access —
+reads included (`s2_get`/`llm_get`/`paper_get`), not just writes — is guarded by the module
+`_lock`; a bare concurrent read on one connection raises `sqlite3.InterfaceError`.
 
 ## Project layout
 ```
@@ -65,7 +104,10 @@ backend/app/
   routes.py      /api endpoints
   schemas.py     pydantic models
 frontend/src/
-  App.jsx        central state + graph merge/dedupe
+  App.jsx        central state + graph merge/dedupe + similar/recs/LLM/session handlers
   api.js         backend client
-  components/    SeedInput, GraphView, DetailPanel, Legend, Filters, LineagePanel, StatusBar
+  utils/export.js  client-side BibTeX/RIS/JSON + download helpers
+  components/    SeedInput, GraphView (forwardRef: exportPng), DetailPanel (similar/explain/
+                 recommend/star), Legend (+summaries), Filters, LineagePanel, LandscapePanel,
+                 ReadingListPanel, Toolbar (export/session), StatusBar
 ```

@@ -19,9 +19,22 @@ app builds an explorable citation graph around it:
   **never auto-expands**. Click any node to expand *its* neighborhood; new papers merge
   into the existing graph (deduped by paper id).
 - **🎨 Themed clusters** — papers are clustered from their SPECTER2 embeddings, and each
-  cluster gets a short, LLM-generated theme label shown in a toggle-able legend.
+  cluster gets a short, LLM-generated theme label (plus an optional 1–2 sentence summary)
+  shown in a toggle-able legend.
 - **🧬 Lineage tracing** — pick two papers and the app finds the shortest path through the
   citation edges, then has Claude narrate how the ideas progressed from one to the other.
+- **🧲 Find similar** — select any paper and instantly rank the rest of the loaded graph by
+  SPECTER2 cosine similarity (a free, local "more like this" — no API call). Matches are
+  highlighted in the graph and listed by score.
+- **🧭 Discover related papers** — pull recommendations from Semantic Scholar for any node
+  and add the ones you want; they join the graph on a dashed "suggested" edge (nothing is
+  auto-added).
+- **📖 Explain & analyze** — a plain-language "Explain this paper" for any node, and a
+  graph-wide **Landscape** briefing that summarizes the themes and points at research gaps.
+- **⭐ Reading list & export** — star papers into a collection and export the list or the
+  whole graph to **BibTeX / RIS / JSON**, or snapshot the graph as **PNG**.
+- **💾 Sessions** — your exploration auto-saves to the browser and offers to restore on the
+  next visit; you can also save/load a session as a JSON file.
 - **⚡ Instant & free on re-runs** — every Semantic Scholar response and every LLM output
   is cached in SQLite, with a live **● cached / ● live** indicator for nerd-cred.
 
@@ -80,7 +93,7 @@ http://127.0.0.1:8000.
 
 | Variable | Effect |
 |---|---|
-| `ANTHROPIC_API_KEY` | Enables LLM cluster labels + lineage narration. |
+| `ANTHROPIC_API_KEY` | Enables all LLM features: cluster labels + summaries, lineage narration, "Explain this paper", and the Landscape gap analysis. |
 | `S2_API_KEY` | Raises Semantic Scholar throughput and makes title search reliable. |
 
 Keys live only in `backend/.env`, which is gitignored — never committed.
